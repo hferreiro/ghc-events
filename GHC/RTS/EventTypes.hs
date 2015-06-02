@@ -4,6 +4,7 @@ module GHC.RTS.EventTypes where
 
 import Data.Word (Word8, Word16, Word32, Word64)
 import Data.Binary
+import Text.Printf
 
 -- EventType.
 type EventTypeNum = Word16
@@ -42,6 +43,15 @@ type ParConjDynId = Word64
 type ParConjStaticId = StringId
 type SparkId = Word32
 type FutureId = Word64
+
+-- Types for Execution Replay
+newtype Pointer = Pointer Word64
+  deriving (Eq, Ord)
+instance Show Pointer where
+  show (Pointer p) = printf "%#x" p
+instance Binary Pointer where
+  put (Pointer p) = put p
+  get = fmap Pointer get
 
 sz_event_type_num :: EventTypeSize
 sz_event_type_num = 2
@@ -367,6 +377,28 @@ data EventInfo
                        , tid     :: {-# UNPACK #-}!KernelThreadId
                        }
 
+  -- execution replay events
+  | CapAlloc           { alloc    :: {-# UNPACK #-}!Word64
+                       , blocks   :: {-# UNPACK #-}!Word64
+                       , hp_alloc :: {-# UNPACK #-}!Word64
+                       }
+  | CapValue           { tag      :: Tag
+                       , value    :: {-# UNPACK #-}!Word64
+                       }
+  | TaskAcquireCap     { task     :: {-# UNPACK #-}!Word64
+                       }
+  | TaskReleaseCap     { task     :: {-# UNPACK #-}!Word64
+                       }
+  | TaskReturnCap      { task     :: {-# UNPACK #-}!Word64
+                       , cap      :: {-# UNPACK #-}!Int
+                       }
+  | ThunkUpdate        { thunk    :: {-# UNPACK #-}!Word64
+                       , ptr      :: {-# UNPACK #-}!Pointer
+                       }
+--  | PointerMove        { ptr      :: {-# UNPACK #-}!Word64
+--                       , new_ptr  :: {-# UNPACK #-}!Word64
+--                       }
+
   deriving Show
 
 {- [Note: Stop status in GHC-7.8.2]
@@ -482,6 +514,58 @@ mkCapsetType n = case n of
  2 -> CapsetOsProcess
  3 -> CapsetClockDomain
  _ -> CapsetUnknown
+
+data Tag
+ = CtxtSwitch
+ | SchedLoop
+ | SendMsg
+ | TakeMVar
+ | PutMVar
+ | GC
+ | ProcessInbox
+ | SchedEnd
+ | StealBlock
+ | CreateSpark
+ | DudSpark
+ | OverflowSpark
+ | RunSpark
+ | StealSpark
+ | FizzleSpark
+ | GCSpark
+ | SuspendComputation
+ | MsgBlackhole
+ | EnterApStack
+ | DupSpark
+ | EnterSpark
+ | WhnfSpark
+ | TagUnknown
+ deriving Show
+
+mkTag :: Word8 -> Tag
+mkTag n = case n of
+ 0  -> CtxtSwitch
+ 1  -> SchedLoop
+ 2  -> SendMsg
+ 3  -> TakeMVar
+ 4  -> PutMVar
+ 5  -> GC
+ 6  -> ProcessInbox
+ 7  -> SchedEnd
+ 8  -> StealBlock
+ 9  -> CreateSpark
+ 10 -> DudSpark
+ 11 -> OverflowSpark
+ 12 -> RunSpark
+ 13 -> StealSpark
+ 14 -> FizzleSpark
+ 15 -> GCSpark
+ 16 -> SuspendComputation
+ 17 -> MsgBlackhole
+ 18 -> EnterApStack
+ 19 -> DupSpark
+ 20 -> EnterSpark
+ 21 -> WhnfSpark
+ _  -> TagUnknown
 
 -- | An event annotated with the Capability that generated it, if any
 data CapEvent

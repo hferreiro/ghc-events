@@ -164,6 +164,14 @@
 #define EVENT_USER_MARKER         58 /* (marker_name) */
 #define EVENT_HACK_BUG_T9003      59 /* Hack: see trac #9003 */
 
+#define EVENT_CAP_ALLOC           60 /* (alloc, blocks, hp_alloc) */
+#define EVENT_CAP_VALUE           61 /* (cap, tag, value) */
+#define EVENT_TASK_ACQUIRE_CAP    62 /* (taskID) */
+#define EVENT_TASK_RELEASE_CAP    63 /* (taskID) */
+#define EVENT_TASK_RETURN_CAP     64 /* (taskID, cap) */
+#define EVENT_THUNK_UPDATE        65 /* (id, ptr) */
+#define EVENT_POINTER_MOVE        66 /* (ptr, new_ptr) */
+
 /* Range 59 - 59 is available for new GHC and common events. */
 
 /* Range 60 - 80 is used by eden for parallel tracing
@@ -302,6 +310,27 @@ typedef StgWord32 EventCapsetID;
 typedef StgWord16 EventCapsetType;   /* types for EVENT_CAPSET_CREATE */
 typedef StgWord64 EventTaskId;         /* for EVENT_TASK_* */
 typedef StgWord64 EventKernelThreadId; /* for EVENT_TASK_CREATE */
+typedef enum {
+    CTXT_SWITCH,
+    SCHED_LOOP,
+    SEND_MESSAGE,
+    TAKE_MVAR,
+    PUT_MVAR,
+    GC,
+    PROCESS_INBOX,
+    SCHED_END,
+    STEAL_BLOCK,
+    SPARK_CREATE,
+    SPARK_DUD,
+    SPARK_OVERFLOW,
+    SPARK_RUN,
+    SPARK_STEAL,
+    SPARK_FIZZLE,
+    SPARK_GC,
+    SUSPEND_COMPUTATION,
+    MSG_BLACKHOLE,
+    THUNK_UPDATED,
+} EventCapTag;
 
 typedef StgWord32 EventProcessID;
 typedef StgWord16 EventMachineID;

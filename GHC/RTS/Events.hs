@@ -25,6 +25,10 @@ module GHC.RTS.Events (
        MessageSize,
        MessageTag(..),
 
+       -- types for Execution Replay
+       Tag(..),
+       Pointer(..),
+
        -- * Reading and writing event logs
        readEventLogFromFile, getEventLog,
        writeEventLogToFile,
@@ -748,6 +752,49 @@ perfParsers = [
   ))
  ]
 
+replayParsers = [
+ (FixedSizeParser EVENT_CAP_ALLOC (3*8) (do -- (alloc, blocks, hp_alloc)
+      alloc    <- getE
+      blocks   <- getE
+      hp_alloc <- getE
+      return CapAlloc{alloc, blocks, hp_alloc}
+  )),
+
+ (FixedSizeParser EVENT_CAP_VALUE (1+8) (do -- (tag, value)
+      tag   <- fmap mkTag getE
+      value <- getE
+      return CapValue{tag, value}
+  )),
+
+ (FixedSizeParser EVENT_TASK_ACQUIRE_CAP (8) (do -- (task)
+      task <- getE
+      return TaskAcquireCap{task}
+  )),
+
+ (FixedSizeParser EVENT_TASK_RELEASE_CAP (8) (do -- (task)
+      task <- getE
+      return TaskReleaseCap{task}
+  )),
+
+ (FixedSizeParser EVENT_TASK_RETURN_CAP (8 + sz_cap) (do -- (task, cap)
+      task  <- getE
+      capno <- getE :: GetEvents CapNo
+      return TaskReturnCap{task, cap = fromIntegral capno}
+  )),
+
+ (FixedSizeParser EVENT_THUNK_UPDATE (2*8) (do -- (id, ptr)
+      thunk <- getE
+      ptr   <- getE
+      return ThunkUpdate{thunk, ptr}
+  ))
+
+-- (FixedSizeParser EVENT_POINTER_MOVE (2*8) (do -- (ptr, new_ptr)
+--      ptr     <- getE
+--      new_ptr <- getE
+--      return PointerMove{ptr, new_ptr}
+--  ))
+ ]
+
 getData :: GetEvents Data
 getData = do
    db <- getE :: GetEvents Marker
@@ -803,6 +850,9 @@ getEventLog = do
         is_ghc782 = M.member EVENT_USER_MARKER imap &&
                     M.notMember EVENT_HACK_BUG_T9003 imap
 
+        --is_replay = length (eventTypes header) == 58
+        is_replay = True
+
         stopParsers = if is_pre77 then pre77StopParsers
                       else if is_ghc782 then [ghc782StopParser]
                            else [post782StopParser]
@@ -810,9 +860,13 @@ getEventLog = do
         event_parsers = if is_ghc_6
                             then standardParsers ++ ghc6Parsers ++
                                 parRTSParsers sz_old_tid
-                            else standardParsers ++ ghc7Parsers ++
-                                stopParsers ++ parRTSParsers sz_tid ++
-                                mercuryParsers ++ perfParsers
+                            else if is_replay
+                                     then standardParsers ++ ghc7Parsers ++
+                                          stopParsers ++ perfParsers ++
+                                          replayParsers
+                                     else standardParsers ++ ghc7Parsers ++
+                                          stopParsers ++ parRTSParsers sz_tid ++
+                                          mercuryParsers ++ perfParsers
         parsers = mkEventTypeParsers imap event_parsers
     dat <- runReaderT getData (EventParsers parsers)
     return (EventLog header dat)
@@ -1074,6 +1128,20 @@ showEventInfo spec =
         PerfTracepoint{perfNum, tid} ->
           printf "perf event tracepoint %d reached in OS thread %d"
                  perfNum (kernelThreadId tid)
+        CapAlloc alloc blocks hp_alloc ->
+          printf "Capability allocation: %d alloc, %d blocks, %d hp_alloc" alloc blocks hp_alloc
+        CapValue tag value ->
+          printf "%s: %s" (showTag tag) (showValue tag value)
+        TaskAcquireCap task ->
+          printf "Task %d acquires capability" task
+        TaskReleaseCap task ->
+          printf "Task %d releases capability" task
+        TaskReturnCap task cap ->
+          printf "Task %d returns to capability %d" task cap
+        ThunkUpdate id (Pointer p) ->
+          printf "Thunk %#x id %d update" p id
+        --PointerMove ptr new_ptr ->
+        --  printf "Pointer %#x moves to %#x" ptr new_ptr
 
 showThreadStopStatus :: ThreadStopStatus -> String
 showThreadStopStatus HeapOverflow   = "heap overflow"
@@ -1098,6 +1166,42 @@ showThreadStopStatus BlockedOnMsgGlobalise = "waiting for data to be globalised"
 showThreadStopStatus (BlockedOnBlackHoleOwnedBy target) =
           "blocked on black hole owned by thread " ++ show target
 showThreadStopStatus NoStatus = "No stop thread status"
+
+showTag :: Tag -> String
+showTag CtxtSwitch = "context switch"
+showTag SchedLoop = "scheduler loop"
+showTag SendMsg = "send message"
+showTag TakeMVar = "take MVar"
+showTag PutMVar = "put MVar"
+showTag GC = "GC"
+showTag ProcessInbox = "process inbox"
+showTag SchedEnd = "scheduler end"
+showTag StealBlock = "steal block"
+showTag CreateSpark = "create spark"
+showTag DudSpark = "dud spark"
+showTag OverflowSpark = "overflow spark"
+showTag RunSpark = "run spark"
+showTag StealSpark = "steal spark"
+showTag FizzleSpark = "fizzle spark"
+showTag GCSpark = "GC spark"
+showTag SuspendComputation = "suspend computation"
+showTag MsgBlackhole = "message blackhole"
+showTag EnterApStack = "enter AP_STACK"
+showTag DupSpark = "duplicated spark"
+showTag EnterSpark = "enter spark"
+showTag WhnfSpark = "whnf spark"
+showTag TagUnknown = "unknown tag"
+
+showValue :: Tag -> Word64 -> String
+showValue t v
+  | isPtr t   = printf "%#x" v
+  | otherwise = show v
+  where
+    isPtr FizzleSpark = True
+    isPtr GCSpark = True
+    isPtr SuspendComputation = True
+    isPtr MsgBlackhole = True
+    isPtr _ = False
 
 ppEventLog :: EventLog -> String
 ppEventLog (EventLog (Header ets) (Data es)) = unlines $ concat (
@@ -1263,6 +1367,13 @@ eventTypeNum e = case e of
     PerfName       {} -> nEVENT_PERF_NAME
     PerfCounter    {} -> nEVENT_PERF_COUNTER
     PerfTracepoint {} -> nEVENT_PERF_TRACEPOINT
+    CapAlloc {} -> EVENT_CAP_ALLOC
+    CapValue {} -> EVENT_CAP_VALUE
+    TaskAcquireCap {} -> EVENT_TASK_ACQUIRE_CAP
+    TaskReleaseCap {} -> EVENT_TASK_RELEASE_CAP
+    TaskReturnCap {} -> EVENT_TASK_RETURN_CAP
+    ThunkUpdate {} -> EVENT_THUNK_UPDATE
+    --PointerMove {} -> EVENT_POINTER_MOVE
 
 nEVENT_PERF_NAME, nEVENT_PERF_COUNTER, nEVENT_PERF_TRACEPOINT :: EventTypeNum
 nEVENT_PERF_NAME = EVENT_PERF_NAME
@@ -1630,6 +1741,56 @@ putEventSpec PerfCounter{..} = do
 putEventSpec PerfTracepoint{..} = do
     putE perfNum
     putE tid
+
+putEventSpec (CapAlloc alloc blocks hp_alloc) = do
+    putE alloc
+    putE blocks
+    putE hp_alloc
+
+putEventSpec (CapValue tag value) = do
+    putE $ case tag of
+            CtxtSwitch -> 0 :: Word8
+            SchedLoop -> 1
+            SendMsg -> 2
+            TakeMVar -> 3
+            PutMVar -> 4
+            GC -> 5
+            ProcessInbox -> 6
+            SchedEnd -> 7
+            StealBlock -> 8
+            CreateSpark -> 9
+            DudSpark -> 10
+            OverflowSpark -> 11
+            RunSpark -> 12
+            StealSpark -> 13
+            FizzleSpark -> 14
+            GCSpark -> 15
+            SuspendComputation -> 16
+            MsgBlackhole -> 17
+            EnterApStack-> 18
+            DupSpark -> 19
+            EnterSpark -> 20
+            WhnfSpark -> 21
+            TagUnknown -> -1
+    putE value
+
+putEventSpec (TaskAcquireCap task) = do
+    putE task
+
+putEventSpec (TaskReleaseCap task) = do
+    putE task
+
+putEventSpec (TaskReturnCap task cap) = do
+    putE task
+    putCap cap
+
+putEventSpec (ThunkUpdate id ptr) = do
+    putE id
+    putE ptr
+
+--putEventSpec (PointerMove ptr new_ptr) = do
+--    putE ptr
+--    putE new_ptr
 
 -- [] == []
 -- [x] == x\0
